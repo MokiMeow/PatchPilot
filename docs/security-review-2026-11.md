@@ -15,6 +15,14 @@ This review prioritizes those boundaries over adding more integrations.
   rejects downgrades, excludes Git ranges, and checks overlapping intervals.
   Only npm SemVer and numeric PyPI releases are resolved automatically. Opaque
   release schemes need manual review. A fix is not proof of registry availability.
+- [Python version ordering](https://packaging.python.org/en/latest/specifications/version-specifiers/)
+  treats trailing zero components as equivalent and orders components as integers.
+  Numeric comparisons use arbitrary precision. Unsupported interval boundaries or
+  explicit affected-version spellings suppress the automatic fix, not the finding.
+  The requirements parser rejects unsupported entries and duplicate
+  [canonical package names](https://packaging.python.org/en/latest/specifications/name-normalization/)
+  rather than overwriting conditional versions. It is not a full
+  [pip requirements resolver](https://pip.pypa.io/en/stable/reference/requirements-file-format/).
 - [FIRST CVSS v3.1](https://www.first.org/cvss/v3.1/specification-document)
   specifies vector scoring and integer-safe rounding. CVSS 3.0/3.1 base vectors
   now produce actual scores rather than unknown severity. CVSS v2/v4 vector
@@ -43,6 +51,11 @@ from execution errors, includes scan coverage in JSON, and no longer replaces an
 unavailable fix with an older potentially vulnerable registry version. CLI and
 Findings page language no longer calls an absent import “likely unused.”
 Pagination now exposes the current page and result range to assistive technology.
+Grouped CLI fixes require identical per-advisory targets. Divergent targets or an
+advisory without a known target require manual review: the largest version can
+reintroduce another vulnerability. JSON findings remain per-advisory.
+LLM remediation plans must use the exact advisory target. URLs, aliases and ranges
+are not coerced into versions, and later releases need a fresh vulnerability check.
 
 Remediation workspace copies reject symlinks; import inspection skips them and
 marks incomplete inspection unknown. This prevents following a project link to
@@ -77,3 +90,8 @@ Use trusted repositories and isolated workers until stronger process/container
 isolation is implemented. Live GitHub mutations, Telegram delivery, model calls,
 Redis/Postgres services and deployment remain credential-gated and are not
 validated by unit tests or the build.
+
+Remediation still targets one advisory at a time. Its install/test/build checks
+are not a fresh vulnerability scan of the entire resolved dependency graph.
+Before approving a generated patch, rescan the resulting lockfile and review all
+remaining advisories; a per-advisory target is not a package-wide safety guarantee.

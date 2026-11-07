@@ -237,15 +237,12 @@ function stripCodeFences(raw: string): string {
   return (fenced?.[1] ?? trimmed).trim();
 }
 
-function cleanVersion(value: string): string | null {
-  return semver.valid(value) ?? semver.valid(semver.coerce(value) ?? "");
-}
-
 /**
  * Parses and strictly validates a model's remediation plan. Rejects: invalid
  * JSON, wrong action, any file other than package.json, arbitrary command
  * fields, package mismatches, invalid/downgrade/major-bump versions, and
- * versions below the known safe fixed version.
+ * targets other than the exact advisory fix. A later release may reintroduce
+ * the vulnerability, and a URL/range must not be coerced into a release number.
  */
 export function parseRemediationPlan(raw: string, expected: RemediationPlanExpectation): RemediationPlan {
   let parsed: unknown;
@@ -273,8 +270,12 @@ export function parseRemediationPlan(raw: string, expected: RemediationPlanExpec
   if (plan.packageName !== expected.packageName) {
     throw new PatchPilotError("plan_package_mismatch", "Model plan targeted a different package than the finding.", { expected: expected.packageName, got: plan.packageName });
   }
-  const from = cleanVersion(expected.fromVersion);
-  const to = cleanVersion(plan.toVersion);
+  const from = semver.valid(expected.fromVersion);
+  const statedFrom = semver.valid(plan.fromVersion);
+  if (!from || !statedFrom || !semver.eq(from, statedFrom)) {
+    throw new PatchPilotError("plan_source_version_mismatch", "Model plan source version does not match the finding.");
+  }
+  const to = semver.valid(plan.toVersion);
   if (!to) {
     throw new PatchPilotError("plan_invalid_version", "Model plan proposed an invalid target version.", { toVersion: plan.toVersion });
   }
@@ -284,11 +285,18 @@ export function parseRemediationPlan(raw: string, expected: RemediationPlanExpec
   if (from && semver.major(to) > semver.major(from)) {
     throw new PatchPilotError("plan_major_upgrade", "Model plan proposed a major-version upgrade, which is blocked.", { fromVersion: expected.fromVersion, toVersion: plan.toVersion });
   }
-  const fixed = expected.fixedVersion ? cleanVersion(expected.fixedVersion) : null;
-  if (fixed && semver.lt(to, fixed)) {
+  const fixed = expected.fixedVersion ? semver.valid(expected.fixedVersion) : null;
+  if (!fixed) {
+    throw new PatchPilotError("plan_fixed_version_missing", "Model plan requires an exact validated advisory fix.");
+  }
+  if (semver.lt(to, fixed)) {
     throw new PatchPilotError("plan_below_fixed_version", "Model plan target is below the known safe fixed version.", { fixedVersion: expected.fixedVersion, toVersion: plan.toVersion });
   }
-  return plan;
+  if (!semver.eq(to, fixed)) {
+    throw new PatchPilotError("plan_target_not_verified", "Model plan target differs from the advisory fix; later releases require a fresh vulnerability check.", { fixedVersion: expected.fixedVersion, toVersion: plan.toVersion });
+  }
+  // Apply only the concrete versions that passed validation, never raw model text.
+  return { ...plan, fromVersion: from, toVersion: fixed };
 }
 
 export interface LlmChatRequest {

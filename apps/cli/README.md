@@ -77,5 +77,5 @@ rescan, and run application tests before approving a patch.
 When a package has multiple advisories with different fix targets, the grouped
 report asks for manual review instead of assuming the largest target fixes every
 advisory. Use `--json` to inspect each advisory separately. Unsupported Python
-requirements (includes, URLs, unpinned names or compound ranges) produce an error
-instead of silently disappearing from the scan.
+requirements (includes, URLs, unpinned names, compound ranges or repeated canonical
+package names) produce an error instead of silently disappearing from the scan.

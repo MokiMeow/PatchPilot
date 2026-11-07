@@ -222,13 +222,19 @@ function selectFixedVersion(affected: Affected, current: string, ecosystem: stri
     if (ecosystem.toLowerCase() === "npm") return semver.valid(a) && semver.valid(b) ? semver.compare(a, b) : undefined;
     // A safe subset of PEP 440. Pre/dev/post/local versions need a full ecosystem resolver.
     if (ecosystem.toLowerCase() !== "pypi" || !/^\d+(?:\.\d+)*$/.test(a) || !/^\d+(?:\.\d+)*$/.test(b)) return undefined;
-    const aa = a.split(".").map(Number), bb = b.split(".").map(Number);
-    for (let i = 0; i < Math.max(aa.length, bb.length); i++) { const diff = (aa[i] ?? 0) - (bb[i] ?? 0); if (diff) return diff; }
+    const aa = a.split(".").map(BigInt), bb = b.split(".").map(BigInt);
+    for (let i = 0; i < Math.max(aa.length, bb.length); i++) {
+      const left = aa[i] ?? 0n, right = bb[i] ?? 0n;
+      if (left !== right) return left > right ? 1 : -1;
+    }
     return 0;
   };
   const ranges = affected.flatMap((item) => item.ranges ?? []).filter((range) => range.type === "SEMVER" || range.type === "ECOSYSTEM");
   // If any relevant interval is opaque, do not pretend a candidate clears it.
   if (ranges.some((range) => (range.events ?? []).some((event) => Object.values(event).some((bound) => bound !== "0" && compare(bound, current) === undefined)))) return undefined;
+  // Explicit versions can use equivalent spellings outside this comparator's
+  // subset (for example PyPI v2.0 and 2.0). Keep the finding, but require review.
+  if (affected.some((item) => item.versions?.some((version) => compare(version, current) === undefined))) return undefined;
   const isAffected = (version: string): boolean => ranges.some((range) => {
     let active = false;
     for (const event of range.events ?? []) {

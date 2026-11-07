@@ -65,15 +65,23 @@ export function readPythonManifest(projectPath: string): PackageManifest | undef
   const manifestPath = path.join(projectPath, "requirements.txt");
   if (!existsSync(manifestPath)) return undefined;
   const dependencies: Record<string, string> = {};
+  const packageNames = new Set<string>();
   for (const line of readFileSync(manifestPath, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     // A root requirements file is not a resolved environment. Never silently
     // skip includes, URLs, editable installs, unpinned names or compound ranges.
     const match = trimmed.match(/^([A-Za-z0-9._-]+)(?:\[[A-Za-z0-9_,. -]+\])?\s*(?:===|==|>=|~=)\s*([^\s#;]+)\s*(?:[#;].*)?$/);
-    if (!match?.[1] || !match[2] || !/^(?:\d+!)?\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$/i.test(match[2])) {
+    if (!match?.[1] || !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(match[1]) || !match[2] || !/^(?:\d+!)?\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$/i.test(match[2])) {
       throw new PatchPilotError("python_requirement_unresolved", "Unsupported requirements entry; provide simple version pins or scan a supported lockfile with OSV-Scanner.", { manifestPath });
     }
+    const canonicalName = match[1].toLowerCase().replace(/[-_.]+/g, "-");
+    // Different marker branches or constraints cannot fit in this one-version map.
+    // Reject even repeated pins rather than silently discarding an earlier entry.
+    if (packageNames.has(canonicalName)) {
+      throw new PatchPilotError("python_requirement_unresolved", "Repeated Python package requirement; resolve the environment and scan a supported lockfile with OSV-Scanner.", { manifestPath });
+    }
+    packageNames.add(canonicalName);
     dependencies[match[1]] = match[2];
   }
   return {

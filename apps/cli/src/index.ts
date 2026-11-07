@@ -11,6 +11,7 @@
  */
 import path from "node:path";
 import { parseScanOptions, severityExitCode, SEVERITY_RANK } from "./options";
+import { groupByPackage, type Group } from "./report";
 import { detectManifests } from "@patchpilot/core";
 import { queryOsvFindings } from "@patchpilot/core";
 import { collectFirstPartyImports, reachabilityForFinding } from "@patchpilot/core";
@@ -117,35 +118,6 @@ async function main(): Promise<void> {
   const exitCode = severityExitCode(findings.map((finding) => finding.severity), failOn);
   if (exitCode === 2) console.error("Severity gate is incomplete: at least one advisory has unknown severity. Review it before accepting this scan.");
   process.exit(exitCode);
-}
-
-interface Group {
-  package: string; ecosystem: string; currentVersion: string; severity: string;
-  fixedVersion: string | null; reachability: string; count: number;
-}
-
-/** Groups per-advisory findings into one row per package. */
-function groupByPackage(findings: Array<Record<string, any>>): Group[] {
-  const map = new Map<string, Group>();
-  for (const f of findings) {
-    const key = `${f.ecosystem}:${f.package}@${f.currentVersion}`;
-    const g = map.get(key);
-    if (!g) {
-      map.set(key, { package: f.package, ecosystem: f.ecosystem, currentVersion: f.currentVersion, severity: f.severity,
-        fixedVersion: f.fixedVersion, reachability: f.reachability, count: 1 });
-    } else {
-      if ((SEVERITY_RANK[f.severity] ?? 0) > (SEVERITY_RANK[g.severity] ?? 0)) g.severity = f.severity;
-      // Different advisory targets are not necessarily mutually safe after reintroductions.
-      if (g.fixedVersion !== f.fixedVersion) g.fixedVersion = null;
-      g.count += 1;
-    }
-  }
-  return [...map.values()].sort((a, b) => {
-    const r = (b.reachability === "imported" ? 1 : 0) - (a.reachability === "imported" ? 1 : 0);
-    if (r) return r;
-    const s = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
-    return s || a.package.localeCompare(b.package);
-  });
 }
 
 function printReport(groups: Group[], advisoryCount: number, scanner: string): void {
