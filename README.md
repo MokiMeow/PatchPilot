@@ -28,7 +28,7 @@ The CLI runs a real OSV scan and tags each finding with the **reachability
 
 ```bash
 pnpm install
-copy .env.example .env
+cp .env.example .env  # Windows: copy .env.example .env
 pnpm test
 pnpm dev
 ```
@@ -89,7 +89,7 @@ pnpm smoke:app http://127.0.0.1:3000
 
 - GitHub PR creation requires a valid `GITHUB_TOKEN`; a PR URL is stored only when a real PR is created.
 - Codex remediation requires a real Codex CLI; otherwise use OpenAI SDK, Vercel AI SDK, or manual plan-only adapters.
-- Telegram sending requires bot credentials; webhook callbacks require `TELEGRAM_WEBHOOK_SECRET` when configured.
+- Telegram sending requires bot credentials; webhook callbacks require `TELEGRAM_WEBHOOK_SECRET`; unconfigured callbacks fail closed.
 - SBOM generation requires Syft; otherwise `sbom_tool_missing` is returned.
 - Vercel API lookups require `VERCEL_TOKEN`; local `.vercel/project.json` mapping still works.
 
@@ -113,3 +113,9 @@ Repository layout:
 - `packages/core`: scanning, risk, remediation, Codex, GitHub, Telegram, audit logic.
 - `scripts/`: local/live verification entry points (`verify:*`, `demo:live`).
 - `tests/fixtures/`: disposable vulnerable fixture used by verifiers.
+
+## Security maintenance
+
+See [the November 2026 review](docs/security-review-2026-11.md) for the current
+scan trust boundaries, dependency updates, verification coverage, and remaining
+deployment limitations. Run `pnpm check:build` and `pnpm audit` before releasing.

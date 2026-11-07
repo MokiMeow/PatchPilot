@@ -38,7 +38,7 @@ marked 🟢.
 |---|---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | 🔒 |, | Sending approval/consent/watch messages | Telegram send disabled (dashboard-only) |
 | `TELEGRAM_CHAT_ID` / `TELEGRAM_ALLOWED_CHAT_IDS` | 🔒 |, | Allowlisted chat(s) | No recipient; sends skipped, webhook taps rejected |
-| `TELEGRAM_WEBHOOK_SECRET` | 🔒 |, | Authenticates the inbound webhook (`X-Telegram-Bot-Api-Secret-Token`) | Webhook validation is skipped (set it in production) |
+| `TELEGRAM_WEBHOOK_SECRET` | 🔒 |, | Authenticates the inbound webhook (`X-Telegram-Bot-Api-Secret-Token`) | Webhook callbacks are rejected (HTTP 503) |
 | `APPROVAL_SIGNING_SECRET` / `APPROVAL_HMAC_SECRET` | 🔒 |, | HMAC for legacy signed approval tokens | Token approvals can't be signed/verified |
 
 ## Codex

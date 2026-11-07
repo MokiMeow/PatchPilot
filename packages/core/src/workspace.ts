@@ -1,8 +1,9 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, lstatSync } from "node:fs";
 import path from "node:path";
+import { PatchPilotError } from "./errors";
 import { getEnv } from "./env";
 
-const EXCLUDES = new Set(["node_modules", ".git", ".next", "dist", "build", ".turbo"]);
+const EXCLUDES = new Set(["node_modules", ".git", ".next", "dist", "build", ".turbo", ".patchpilot"]);
 const SECRET_FILE_NAMES = new Set([
   ".env",
   ".npmrc",
@@ -24,16 +25,22 @@ const SECRET_FILE_NAMES = new Set([
 const SECRET_EXTENSIONS = [".pem", ".key", ".p12", ".pfx"];
 
 export function copyProjectToWorkspace(source: string, destination: string): void {
+  if (lstatSync(source).isSymbolicLink()) {
+    throw new PatchPilotError("workspace_symlink_unsupported", "Project workspaces cannot include symbolic links.");
+  }
   mkdirSync(destination, { recursive: true });
   for (const entry of readdirSync(source)) {
     if (EXCLUDES.has(entry)) continue;
     if (!shouldCopyProjectEntry(entry)) continue;
     const from = path.join(source, entry);
     const to = path.join(destination, entry);
-    const stat = statSync(from);
+    const stat = lstatSync(from);
+    if (stat.isSymbolicLink()) {
+      throw new PatchPilotError("workspace_symlink_unsupported", "Project workspaces cannot include symbolic links.", { entry });
+    }
     if (stat.isDirectory()) {
       copyProjectToWorkspace(from, to);
-    } else if (stat.isFile() || stat.isSymbolicLink()) {
+    } else if (stat.isFile()) {
       cpSync(from, to, { recursive: true });
     }
   }

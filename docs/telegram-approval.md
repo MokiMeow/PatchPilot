@@ -5,7 +5,7 @@ Telegram send requires:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_CHAT_IDS`
 - `APPROVAL_HMAC_SECRET`
-- `TELEGRAM_WEBHOOK_SECRET` when Telegram webhook secret-token validation is enabled
+- `TELEGRAM_WEBHOOK_SECRET` (required for all webhook callbacks)
 
 ## Inline buttons (tap, don't type)
 

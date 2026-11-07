@@ -46,12 +46,12 @@ export function PaginatedTable({
             return (
               <span key={p} style={{ display: "inline-flex", alignItems: "center" }}>
                 {gap && <span className="pager-gap">…</span>}
-                <button type="button" className={`pager-btn${p === current ? " active" : ""}`} onClick={() => setPage(p)}>{p}</button>
+                <button type="button" aria-label={`Page ${p}`} aria-current={p === current ? "page" : undefined} className={`pager-btn${p === current ? " active" : ""}`} onClick={() => setPage(p)}>{p}</button>
               </span>
             );
           })}
           <button type="button" className="pager-btn" onClick={() => setPage(current + 1)} disabled={current === pages}>Next ›</button>
-          <span className="pager-info">{start + 1}–{Math.min(start + pageSize, total)} of {total} · newest first</span>
+          <span className="pager-info" aria-live="polite">{start + 1}–{Math.min(start + pageSize, total)} of {total} · newest first</span>
         </nav>
       )}
     </>

@@ -8,7 +8,7 @@ Secure defaults:
 - No local scanning outside `PATCHPILOT_LOCAL_ROOTS`.
 - No raw secret logging.
 - No Telegram approval without HMAC and chat allowlist.
-- No Telegram webhook callback accepted with a wrong `X-Telegram-Bot-Api-Secret-Token` when configured.
+- No Telegram webhook callback accepted with a wrong `X-Telegram-Bot-Api-Secret-Token` and when no webhook secret is configured.
 - No Codex execution when the CLI is missing, disabled, lacks sandbox flags, or exceeds timeout.
 - No validation install lifecycle scripts unless `PATCHPILOT_ALLOW_VALIDATION_SCRIPTS=true`.
 
@@ -38,3 +38,16 @@ Controls planned:
 - Docker/container worker isolation.
 - Postgres row-level/multi-user controls.
 - GitHub App scoped installation tokens.
+
+## Deployment boundary
+
+Run validation/remediation only on trusted repositories in an isolated worker.
+A disposable directory and `--ignore-scripts` on installation do not sandbox
+explicit repository test/build commands. The default JSON store is single-process
+state, not a transactional multi-user database. Keep the service on loopback or
+behind authenticated ingress; configure the dashboard token before remote access.
+Do not use the hosted demo as a production approval service.
+
+Workspace copying rejects symbolic links rather than reading targets outside the
+approved source. Import collection skips symlinks and reports unknown reachability
+when inspection is incomplete. A missing literal import is never a safety proof.

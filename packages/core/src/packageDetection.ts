@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { PatchPilotError } from "./errors";
 import type { PackageManager } from "./types";
 
 export interface PackageManifest {
@@ -66,9 +67,14 @@ export function readPythonManifest(projectPath: string): PackageManifest | undef
   const dependencies: Record<string, string> = {};
   for (const line of readFileSync(manifestPath, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("-")) continue;
-    const match = trimmed.match(/^([A-Za-z0-9._-]+)\s*(?:==|===|>=|~=)\s*([^\s#;]+)/);
-    if (match?.[1] && match[2]) dependencies[match[1]] = match[2];
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    // A root requirements file is not a resolved environment. Never silently
+    // skip includes, URLs, editable installs, unpinned names or compound ranges.
+    const match = trimmed.match(/^([A-Za-z0-9._-]+)(?:\[[A-Za-z0-9_,. -]+\])?\s*(?:===|==|>=|~=)\s*([^\s#;]+)\s*(?:[#;].*)?$/);
+    if (!match?.[1] || !match[2] || !/^(?:\d+!)?\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$/i.test(match[2])) {
+      throw new PatchPilotError("python_requirement_unresolved", "Unsupported requirements entry; provide simple version pins or scan a supported lockfile with OSV-Scanner.", { manifestPath });
+    }
+    dependencies[match[1]] = match[2];
   }
   return {
     name: path.basename(projectPath),

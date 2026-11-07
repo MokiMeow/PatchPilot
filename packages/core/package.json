@@ -15,19 +15,19 @@
     "scan:fixture": "tsx src/cli-scan-fixture.ts"
   },
   "dependencies": {
-    "@octokit/rest": "^22.0.0",
-    "ai": "^6.0.191",
-    "bullmq": "^5.77.6",
-    "nanoid": "^5.1.0",
-    "openai": "^6.39.0",
-    "pg": "^8.21.0",
-    "semver": "^7.7.0",
-    "simple-git": "^3.28.0",
-    "zod": "^4.1.0"
+    "@octokit/rest": "^22.0.1",
+    "ai": "^6.0.323",
+    "bullmq": "^5.81.5",
+    "nanoid": "^5.1.16",
+    "openai": "^6.49.0",
+    "pg": "^8.23.1",
+    "semver": "^7.8.6",
+    "simple-git": "^4.0.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0",
-    "@types/semver": "^7.7.0",
-    "tsx": "^4.20.0"
+    "@types/pg": "^8.23.1",
+    "@types/semver": "^7.8.0",
+    "tsx": "^4.23.15"
   }
 }

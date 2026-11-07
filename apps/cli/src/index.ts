@@ -7,9 +7,10 @@
  *
  * It queries the live OSV database and tags each finding with the reachability
  * (VEX-lite) signal — so you fix what's actually imported first. Real results
- * only; with no network it simply reports no findings.
+ * only; an incomplete or failed scan exits non-zero.
  */
 import path from "node:path";
+import { parseScanOptions, severityExitCode, SEVERITY_RANK } from "./options";
 import { detectManifests } from "@patchpilot/core";
 import { queryOsvFindings } from "@patchpilot/core";
 import { collectFirstPartyImports, reachabilityForFinding } from "@patchpilot/core";
@@ -22,9 +23,8 @@ const useColor = process.stdout.isTTY && process.env.NO_COLOR === undefined;
 const c = (code: string, s: string) => (useColor ? code + s + C.reset : s);
 
 const REACH_LABEL: Record<string, string> = {
-  imported: "reachable", not_imported: "likely unused", indirect: "transitive", unknown: "unknown"
+  imported: "reachable", not_imported: "import not observed", indirect: "transitive", unknown: "unknown"
 };
-const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0, "": 0 };
 const SHORT_SEV: Record<string, string> = { critical: "CRIT", high: "HIGH", medium: "MED", low: "LOW", unknown: "—" };
 
 function usage(): void {
@@ -45,8 +45,9 @@ ${c(C.bold, "Examples")}
   npx patchpilot-cli scan ./my-app --fail-on high
   patchpilot scan . --json > findings.json
 
-Reachability: ${c(C.orange, "● reachable")} = imported in your source · ${c(C.gray, "○ likely unused / transitive")} = de-prioritized.
-Queries the live OSV database; with no network it reports no findings.
+Reachability: ${c(C.orange, "● reachable")} = imported in your source · ${c(C.gray, "○ import not observed / transitive")} = import signal only, not proof of safety.
+Network/scanner errors exit 2, never a clean result. Unknown severity also exits 2 when --fail-on is set.
+Manifest-only scans estimate versions and do not cover transitive dependencies.
 `);
 }
 
@@ -57,59 +58,17 @@ function sevColor(sev: string): string {
   return C.gray;
 }
 
-/** Best-effort: fetch full OSV records to fill in severity the batch query omits. */
-async function enrichSeverities(ids: string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const unique = [...new Set(ids.filter(Boolean))];
-  const limit = 8;
-  let i = 0;
-  async function worker(): Promise<void> {
-    while (i < unique.length) {
-      const id = unique[i++]!;
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 5000);
-        const res = await fetch(`https://api.osv.dev/v1/vulns/${encodeURIComponent(id)}`, { signal: ctrl.signal });
-        clearTimeout(timer);
-        if (!res.ok) continue;
-        const body: any = await res.json();
-        out.set(id, severityFromOsv(body));
-      } catch { /* offline / rate-limited → leave unknown */ }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, unique.length) }, worker));
-  return out;
-}
-
-function severityFromOsv(vuln: any): string {
-  const cvss = (vuln?.severity ?? []).find((s: any) => String(s.type).toUpperCase().startsWith("CVSS"));
-  const m = cvss?.score?.match(/^(\d+(\.\d+)?)/);
-  if (m) return labelForCvss(Number(m[1]));
-  const ds = vuln?.database_specific?.severity;
-  if (typeof ds === "string") {
-    const l = ds.toLowerCase();
-    if (["critical", "high", "medium", "moderate", "low"].includes(l)) return l === "moderate" ? "medium" : l;
-  }
-  return "unknown";
-}
-function labelForCvss(s: number): string {
-  if (s >= 9) return "critical"; if (s >= 7) return "high"; if (s >= 4) return "medium"; if (s > 0) return "low"; return "unknown";
-}
-
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) { usage(); process.exit(0); }
   if (argv[0] !== "scan") { console.error(c(C.red, `Unknown command: ${argv[0]}`)); usage(); process.exit(2); }
 
-  const json = argv.includes("--json");
-  const failOnIdx = argv.indexOf("--fail-on");
-  const failOn = failOnIdx >= 0 ? (argv[failOnIdx + 1] ?? "").toLowerCase() : "";
-  const positional = argv.slice(1).filter((a) => !a.startsWith("--") && a !== failOn);
-  const target = path.resolve(positional[0] ?? process.cwd());
+  const { json, failOn, target: requestedTarget } = parseScanOptions(argv.slice(1));
+  const target = path.resolve(requestedTarget ?? process.cwd());
 
   if (!json) {
     console.error("");
-    console.error(c(C.dim, `  $ patchpilot scan ${positional[0] ?? "."}`));
+    console.error(c(C.dim, `  $ patchpilot scan ${requestedTarget ?? "."}`));
     console.error(c(C.dim, `  Scanning ${target} via OSV…`));
   }
 
@@ -138,13 +97,6 @@ async function main(): Promise<void> {
     };
   });
 
-  // Fill missing severities from the OSV vuln records (batch query omits them).
-  if (findings.some((f) => f.severity === "unknown" || !SEVERITY_RANK[f.severity])) {
-    const enriched = await enrichSeverities(findings.map((f) => f.advisory));
-    findings = findings.map((f) => (f.severity === "unknown" && enriched.has(f.advisory))
-      ? { ...f, severity: enriched.get(f.advisory)! } : f);
-  }
-
   // Reachable first, then by severity, then package name.
   findings.sort((a, b) => {
     const ra = a.reachability === "imported" ? 1 : 0, rb = b.reachability === "imported" ? 1 : 0;
@@ -155,30 +107,16 @@ async function main(): Promise<void> {
   });
 
   if (json) {
-    console.log(JSON.stringify({ target, scanner: result.scanner, count: findings.length, findings }, null, 2));
+    console.log(JSON.stringify({ target, scanner: result.scanner, scanConfidence: result.scanConfidence, count: findings.length, findings }, null, 2));
   } else {
     const groups = groupByPackage(findings);
-    await resolveRealFixes(groups);
     printReport(groups, findings.length, result.scanner);
+    if (result.scanConfidence === "direct_manifest_only") console.log(c(C.yellow, "  Coverage: direct manifest dependencies only; versions are estimates, transitive dependencies were not scanned.\n"));
   }
 
-  if (failOn && SEVERITY_RANK[failOn] !== undefined) {
-    const breach = findings.some((f) => (SEVERITY_RANK[f.severity] ?? 0) >= SEVERITY_RANK[failOn]!);
-    if (breach) process.exit(1);
-  }
-  process.exit(0);
-}
-
-/** Picks the higher of two semver-ish version strings. */
-function maxVersion(a: string | null, b: string | null): string | null {
-  if (!a) return b; if (!b) return a;
-  const pa = a.split(".").map((n) => parseInt(n, 10));
-  const pb = b.split(".").map((n) => parseInt(n, 10));
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0, y = pb[i] ?? 0;
-    if (x !== y) return x > y ? a : b;
-  }
-  return a;
+  const exitCode = severityExitCode(findings.map((finding) => finding.severity), failOn);
+  if (exitCode === 2) console.error("Severity gate is incomplete: at least one advisory has unknown severity. Review it before accepting this scan.");
+  process.exit(exitCode);
 }
 
 interface Group {
@@ -186,25 +124,19 @@ interface Group {
   fixedVersion: string | null; reachability: string; count: number;
 }
 
-const isStable = (v: string) => /^\d+\.\d+\.\d+$/.test(v);
-function cmpVersion(a: string, b: string): number {
-  const pa = a.split(".").map((n) => parseInt(n, 10)), pb = b.split(".").map((n) => parseInt(n, 10));
-  for (let i = 0; i < 3; i++) { const x = pa[i] ?? 0, y = pb[i] ?? 0; if (x !== y) return x - y; }
-  return 0;
-}
-
 /** Groups per-advisory findings into one row per package. */
 function groupByPackage(findings: Array<Record<string, any>>): Group[] {
   const map = new Map<string, Group>();
   for (const f of findings) {
-    const key = `${f.package}@${f.currentVersion}`;
+    const key = `${f.ecosystem}:${f.package}@${f.currentVersion}`;
     const g = map.get(key);
     if (!g) {
       map.set(key, { package: f.package, ecosystem: f.ecosystem, currentVersion: f.currentVersion, severity: f.severity,
         fixedVersion: f.fixedVersion, reachability: f.reachability, count: 1 });
     } else {
       if ((SEVERITY_RANK[f.severity] ?? 0) > (SEVERITY_RANK[g.severity] ?? 0)) g.severity = f.severity;
-      g.fixedVersion = maxVersion(g.fixedVersion, f.fixedVersion);
+      // Different advisory targets are not necessarily mutually safe after reintroductions.
+      if (g.fixedVersion !== f.fixedVersion) g.fixedVersion = null;
       g.count += 1;
     }
   }
@@ -214,49 +146,6 @@ function groupByPackage(findings: Array<Record<string, any>>): Group[] {
     const s = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
     return s || a.package.localeCompare(b.package);
   });
-}
-
-/**
- * OSV "fixed" bounds are sometimes synthetic (e.g. lodash 4.18.0, which was
- * never published). Resolve each group's fix to the lowest *real* published
- * stable version that is >= the OSV target, so the recommendation is installable.
- */
-async function resolveRealFixes(groups: Group[]): Promise<void> {
-  await Promise.all(groups.map(async (g) => {
-    if (!g.fixedVersion) return;
-    try {
-      const versions = await registryVersions(g.package, g.ecosystem);
-      if (!versions.length) return;
-      const target = g.fixedVersion;
-      const atOrAbove = versions.filter((v) => cmpVersion(v, target) >= 0).sort(cmpVersion);
-      // Lowest real published version that clears all advisories; else the latest real version.
-      g.fixedVersion = atOrAbove[0] ?? [...versions].sort(cmpVersion)[versions.length - 1] ?? target;
-    } catch { /* offline → keep the OSV target */ }
-  }));
-}
-
-async function registryVersions(pkg: string, ecosystem: string): Promise<string[]> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    if (/pypi|python|pip/i.test(ecosystem)) {
-      const res = await fetch(`https://pypi.org/pypi/${encodeURIComponent(pkg)}/json`, { signal: ctrl.signal });
-      if (!res.ok) return [];
-      const body: any = await res.json();
-      return Object.keys(body.releases ?? {}).filter(isStable);
-    }
-    // Abbreviated packument (~50x smaller than the full doc) so big packages
-    // like lodash parse well within the timeout.
-    const res = await fetch(`https://registry.npmjs.org/${encodeURIComponent(pkg).replace("%40", "@")}`, {
-      signal: ctrl.signal,
-      headers: { accept: "application/vnd.npm.install-v1+json" }
-    });
-    if (!res.ok) return [];
-    const body: any = await res.json();
-    return Object.keys(body.versions ?? {}).filter(isStable);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function printReport(groups: Group[], advisoryCount: number, scanner: string): void {
@@ -271,7 +160,7 @@ function printReport(groups: Group[], advisoryCount: number, scanner: string): v
   for (const g of groups) {
     const sev = (SHORT_SEV[g.severity] ?? "·").padEnd(4);
     const pkg = c(C.bold, g.package) + c(C.dim, `@${g.currentVersion}`);
-    const fix = g.fixedVersion ? c(C.green, `→ ${g.fixedVersion}`) : c(C.dim, "manual review");
+    const fix = g.fixedVersion ? c(C.green, `→ ${g.fixedVersion} (advisory target; verify availability)`) : c(C.dim, "manual review");
     const adv = g.count > 1 ? c(C.dim, `  (${g.count} advisories)`) : "";
     console.log(`  ${c(sevColor(g.severity), sev)}  ${pkg}  ${fix}${adv}`);
     const dot = g.reachability === "imported" ? c(C.orange, "● reachable") : c(C.gray, `○ ${REACH_LABEL[g.reachability]}`);
@@ -279,11 +168,12 @@ function printReport(groups: Group[], advisoryCount: number, scanner: string): v
   }
   const reachable = groups.filter((g) => g.reachability === "imported").length;
   console.log("");
-  console.log("  " + c(C.orange, "▸") + " " + c(C.bold, `${reachable} reachable`) + c(C.dim, ` · ${groups.length - reachable} de-prioritized`));
-  console.log("  " + c(C.dim, "Fix the reachable ones first.") + "\n");
+  console.log("  " + c(C.orange, "▸") + " " + c(C.bold, `${reachable} reachable`) + c(C.dim, ` · ${groups.length - reachable} without a direct import signal`));
+  console.log("  " + c(C.dim, "Import signals prioritize review; they do not prove exploitability or safety.") + "\n");
 }
 
 main().catch((err) => {
   console.error(c(C.red, "PatchPilot CLI error: ") + (err instanceof Error ? err.message : String(err)));
-  process.exit(1);
+  if (process.argv.includes("--json")) console.log(JSON.stringify({ error: "scan_failed", message: err instanceof Error ? err.message : String(err) }));
+  process.exit(2);
 });

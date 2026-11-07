@@ -597,7 +597,56 @@ function elapsed(startedAt: string): number {
 function runExternal(command: string, args: string[], cwd: string, timeoutMs: number): { status: number; stdout: string; stderr: string; timedOut: boolean } {
   const result = spawnTool(command, args, { cwd, timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   const errnoCode = result.error && "code" in result.error ? (result.error as NodeJS.ErrnoException).code : undefined;
-  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: redact(result.stderr ?? ""), timedOut: errnoCode === "ETIMEDOUT" };
+  return { status: result.error || result.signal ? 1 : result.status ?? 1, stdout: result.stdout ?? "", stderr: redact(result.stderr ?? ""), timedOut: errnoCode === "ETIMEDOUT" };
+}
+
+// Operational failures must never become a successful, empty security report.
+// Gitleaks uses 1 for both leaks and errors by default, so assign findings a
+// distinct code. Semgrep scan (without --error) and Trivy --exit-code 0 use 0.
+const GITLEAKS_FINDINGS_EXIT_CODE = 10;
+
+function reportResult(scanner: string, category: ScannerCategory, startedAt: string,
+  result: { status: number; stdout: string; stderr: string; timedOut: boolean },
+  report: string, allowedCodes: number[], parse: (raw: string) => ScannerFinding[]): ScannerResult {
+  const errors: string[] = [];
+  let findings: ScannerFinding[] = [];
+  if (result.timedOut) errors.push(`${scanner} timed out`);
+  if (!allowedCodes.includes(result.status)) errors.push(`${scanner} exited with code ${result.status}`);
+  try {
+    const data: unknown = JSON.parse(report);
+    const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    const records = (value: unknown): value is Record<string, unknown>[] => Array.isArray(value) && value.every(record);
+    if (scanner === "gitleaks") {
+      if (!records(data)) throw new Error("Expected a Gitleaks report array");
+      if (result.status === GITLEAKS_FINDINGS_EXIT_CODE && data.length === 0) errors.push("Gitleaks reported leaks but returned no findings");
+    } else if (scanner === "semgrep") {
+      if (!record(data) || !records(data.results)) throw new Error("Expected Semgrep results array");
+      for (const item of data.results) {
+        if (item.start !== undefined && !record(item.start)) throw new Error("Invalid Semgrep location");
+        if (item.extra !== undefined && !record(item.extra)) throw new Error("Invalid Semgrep details");
+        if (record(item.extra) && item.extra.metadata !== undefined && !record(item.extra.metadata)) throw new Error("Invalid Semgrep metadata");
+      }
+      if (data.errors !== undefined && !Array.isArray(data.errors)) throw new Error("Invalid Semgrep errors array");
+      // Keep findings from partial scans, but never present partial coverage as clean.
+      if (Array.isArray(data.errors) && data.errors.length) errors.push(`Semgrep reported ${data.errors.length} analysis error(s)`);
+    } else {
+      // Trivy legitimately omits Results for targets without scannable packages.
+      if (!record(data) || (data.Results === undefined ? typeof data.SchemaVersion !== "number" : !records(data.Results))) {
+        throw new Error("Expected a Trivy JSON report");
+      }
+      for (const item of (data.Results ?? []) as Record<string, unknown>[]) {
+        for (const key of ["Vulnerabilities", "Misconfigurations", "Secrets", "Licenses"]) {
+          if (item[key] !== undefined && !records(item[key])) throw new Error(`Invalid Trivy ${key}`);
+        }
+      }
+    }
+    findings = parse(report);
+  } catch {
+    // Do not echo report contents: scanner output can contain raw secrets.
+    errors.push(`${scanner} produced missing, malformed, or unsupported JSON output`);
+  }
+  if (errors.length && result.stderr) errors.push(result.stderr.slice(0, 300));
+  return { scanner, category, status: errors.length ? "error" : "completed", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings, errors, complete: errors.length === 0 };
 }
 
 function runGitleaks(projectPath: string, command: string, timeoutMs: number): ScannerResult {
@@ -605,13 +654,10 @@ function runGitleaks(projectPath: string, command: string, timeoutMs: number): S
   const reportDir = mkdtempSync(path.join(os.tmpdir(), "patchpilot-gitleaks-"));
   const reportPath = path.join(reportDir, "report.json");
   try {
-    const result = runExternal(command, ["detect", "--source", projectPath, "--no-git", "--no-banner", "--report-format", "json", "--report-path", reportPath], projectPath, timeoutMs);
-    if (result.timedOut) {
-      return { scanner: "gitleaks", category: "secret", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [`gitleaks timed out after ${timeoutMs}ms`], complete: false };
-    }
-    // gitleaks exits non-zero when leaks are found; the report still parses.
-    const findings = existsSync(reportPath) ? parseGitleaksJson(readFileSync(reportPath, "utf8")) : [];
-    return { scanner: "gitleaks", category: "secret", status: "completed", version: probeVersion(command), startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings, errors: result.stderr ? [result.stderr.slice(0, 300)] : [], complete: true };
+    const result = runExternal(command, ["detect", "--source", projectPath, "--no-git", "--no-banner", "--exit-code", String(GITLEAKS_FINDINGS_EXIT_CODE), "--report-format", "json", "--report-path", reportPath], projectPath, timeoutMs);
+    let report = "";
+    try { report = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : ""; } catch { /* Unreadable reports fail closed below. */ }
+    return { ...reportResult("gitleaks", "secret", startedAt, result, report, [0, GITLEAKS_FINDINGS_EXIT_CODE], parseGitleaksJson), version: probeVersion(command) };
   } finally {
     rmSync(reportDir, { recursive: true, force: true });
   }
@@ -622,14 +668,7 @@ function runSemgrep(projectPath: string, command: string, timeoutMs: number): Sc
   const result = command === WSL_SEMGREP
     ? runSemgrepWsl(projectPath, timeoutMs)
     : runExternal(command, ["scan", "--json", "--quiet", "--metrics=off", "--config", "p/default", projectPath], projectPath, timeoutMs);
-  if (result.timedOut) {
-    return { scanner: "semgrep", category: "sast", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [`semgrep timed out after ${timeoutMs}ms`], complete: false };
-  }
-  if (!result.stdout.trim()) {
-    return { scanner: "semgrep", category: "sast", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [result.stderr.slice(0, 300) || "semgrep produced no output"], complete: false };
-  }
-  const version = command === WSL_SEMGREP ? semgrepWslVersion() : probeVersion(command);
-  return { scanner: "semgrep", category: "sast", status: "completed", version, startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: parseSemgrepJson(result.stdout), errors: [], complete: true };
+  return { ...reportResult("semgrep", "sast", startedAt, result, result.stdout, [0], parseSemgrepJson), version: command === WSL_SEMGREP ? semgrepWslVersion() : probeVersion(command) };
 }
 
 /** Runs Semgrep inside WSL against a Windows project path (translated to /mnt). */
@@ -638,19 +677,13 @@ function runSemgrepWsl(projectPath: string, timeoutMs: number): { status: number
   const shell = `cd '${wslPath.replace(/'/g, "'\\''")}' && ${WSL_SEMGREP_BIN} scan --json --quiet --metrics=off --config p/default .`;
   const r = spawnSync("wsl", ["bash", "-lc", shell], { encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   const errnoCode = r.error && "code" in r.error ? (r.error as NodeJS.ErrnoException).code : undefined;
-  return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: redact(r.stderr ?? ""), timedOut: errnoCode === "ETIMEDOUT" };
+  return { status: r.error || r.signal ? 1 : r.status ?? 1, stdout: r.stdout ?? "", stderr: redact(r.stderr ?? ""), timedOut: errnoCode === "ETIMEDOUT" };
 }
 
 function runTrivyFs(projectPath: string, command: string, timeoutMs: number): ScannerResult {
   const startedAt = now();
-  const result = runExternal(command, ["fs", "--format", "json", "--quiet", "--scanners", "vuln,misconfig,secret,license", projectPath], projectPath, timeoutMs);
-  if (result.timedOut) {
-    return { scanner: "trivy", category: "container", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [`trivy timed out after ${timeoutMs}ms`], complete: false };
-  }
-  if (!result.stdout.trim()) {
-    return { scanner: "trivy", category: "container", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [result.stderr.slice(0, 300) || "trivy produced no output"], complete: false };
-  }
-  return { scanner: "trivy", category: "container", status: "completed", version: probeVersion(command), startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: parseTrivyJson(result.stdout, { licensePolicy: loadLicensePolicy() }), errors: [], complete: true };
+  const result = runExternal(command, ["fs", "--exit-code", "0", "--format", "json", "--quiet", "--scanners", "vuln,misconfig,secret,license", projectPath], projectPath, timeoutMs);
+  return { ...reportResult("trivy", "container", startedAt, result, result.stdout, [0], (raw) => parseTrivyJson(raw, { licensePolicy: loadLicensePolicy() })), version: probeVersion(command) };
 }
 
 /**
@@ -664,10 +697,8 @@ export function scanContainerImage(image: string, timeoutMs = scannerTimeoutMs()
     return { scanner: "trivy", category: "container", status: tool.status === "disabled" ? "disabled" : "tool_missing", findings: [], errors: [], installHint: tool.installHint, complete: false };
   }
   const startedAt = now();
-  const result = runExternal(tool.command, ["image", "--format", "json", "--quiet", "--scanners", "vuln", image], process.cwd(), timeoutMs);
-  if (result.timedOut) return { scanner: "trivy", category: "container", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [`trivy image timed out after ${timeoutMs}ms`], complete: false };
-  if (!result.stdout.trim()) return { scanner: "trivy", category: "container", status: "error", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: [], errors: [result.stderr.slice(0, 300) || "trivy image produced no output"], complete: false };
-  return { scanner: "trivy", category: "container", status: "completed", startedAt, finishedAt: now(), durationMs: elapsed(startedAt), findings: parseTrivyJson(result.stdout), errors: [], complete: true };
+  const result = runExternal(tool.command, ["image", "--exit-code", "0", "--format", "json", "--quiet", "--scanners", "vuln", image], process.cwd(), timeoutMs);
+  return reportResult("trivy", "container", startedAt, result, result.stdout, [0], parseTrivyJson);
 }
 
 // ---------- coverage (dashboard) ----------

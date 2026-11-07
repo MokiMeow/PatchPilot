@@ -227,7 +227,7 @@ describe("OSV normalization", () => {
       id: "GHSA-35jh-r3h4-6jhm",
       aliases: ["CVE-2021-23337"],
       summary: "lodash command injection",
-      affected: [{ ranges: [{ events: [{ introduced: "0" }, { fixed: "4.17.21" }] }] }]
+      affected: [{ package: { name: "lodash", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }] }]
     }, "lodash", "4.17.20", "direct");
     expect(finding.fixedVersion).toBe("4.17.21");
     expect(finding.vulnerability.cveIds).toContain("CVE-2021-23337");
@@ -848,7 +848,7 @@ describe("BYO agent provider layer", () => {
 
   it("normalizes OSV findings for non-npm ecosystems (PyPI)", () => {
     const finding = normalizeOsvVulnerability(
-      { id: "GHSA-x", aliases: ["CVE-2023-1"], summary: "flask issue", affected: [{ ranges: [{ events: [{ introduced: "0" }, { fixed: "2.0.1" }] }] }] },
+      { id: "GHSA-x", aliases: ["CVE-2023-1"], summary: "flask issue", affected: [{ package: { name: "flask", ecosystem: "PyPI" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "2.0.1" }] }] }] },
       "flask", "2.0.0", "direct", "PyPI"
     );
     expect(finding.ecosystem).toBe("PyPI");
@@ -1229,7 +1229,7 @@ describe("scanner orchestration", () => {
       return cmd;
     }
 
-    const gitleaks = fakeTool("gitleaks", `const i=args.indexOf("--report-path");fs.writeFileSync(args[i+1],JSON.stringify([{RuleID:"aws-key",Description:"AWS",File:"leak.env",StartLine:1,Secret:"AKIAIOSFODNN7EXAMPLE"}]));process.exit(1);`);
+    const gitleaks = fakeTool("gitleaks", `const i=args.indexOf("--report-path");fs.writeFileSync(args[i+1],JSON.stringify([{RuleID:"aws-key",Description:"AWS",File:"leak.env",StartLine:1,Secret:"AKIAIOSFODNN7EXAMPLE"}]));process.exit(Number(args[args.indexOf("--exit-code")+1]));`);
     const semgrep = fakeTool("semgrep", `console.log(JSON.stringify({results:[{check_id:"rule.x",path:"a.js",start:{line:3},extra:{message:"bad",severity:"ERROR"}}]}));`);
     const trivy = fakeTool("trivy", `console.log(JSON.stringify({Results:[{Target:"package-lock.json",Vulnerabilities:[{VulnerabilityID:"CVE-2021-23337",PkgName:"lodash",InstalledVersion:"4.17.20",FixedVersion:"4.17.21",Severity:"HIGH",Title:"cmd injection"}]}]}));`);
 
@@ -1447,7 +1447,7 @@ describe("GitHub scanning", () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
       const value = String(url);
       if (value.includes("/vulns/OSV-TEST")) {
-        return new Response(JSON.stringify({ id: "OSV-TEST", aliases: [], summary: "fixture", affected: [{ ranges: [{ events: [{ introduced: "0" }, { fixed: "4.17.21" }] }] }] }), { status: 200 });
+        return new Response(JSON.stringify({ id: "OSV-TEST", aliases: [], summary: "fixture", affected: [{ package: { name: "lodash", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }] }] }), { status: 200 });
       }
       return new Response(JSON.stringify({ results: [{ vulns: [{ id: "OSV-TEST" }] }] }), { status: 200 });
     });

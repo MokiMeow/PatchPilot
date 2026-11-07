@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { getEnv } from "./env";
 import { PatchPilotError } from "./errors";
 
@@ -88,11 +89,13 @@ export function redactTelegramChatId(chatId: string): string {
 
 export function validateTelegramWebhookSecret(headerValue: string | null | undefined): void {
   const expected = getEnv("TELEGRAM_WEBHOOK_SECRET");
-  if (!expected) return;
+  if (!expected) throw new PatchPilotError("telegram_webhook_not_configured", "Configure TELEGRAM_WEBHOOK_SECRET before accepting approval callbacks.", {}, 503);
   if (!headerValue) {
     throw new PatchPilotError("telegram_webhook_secret_missing", "Telegram webhook secret header is required.", { header: "X-Telegram-Bot-Api-Secret-Token" }, 401);
   }
-  if (headerValue !== expected) {
+  const actualBytes = Buffer.from(headerValue);
+  const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
     throw new PatchPilotError("telegram_webhook_secret_invalid", "Telegram webhook secret header is invalid.", { header: "X-Telegram-Bot-Api-Secret-Token" }, 403);
   }
 }
